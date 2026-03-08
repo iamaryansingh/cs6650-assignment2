@@ -1,0 +1,21 @@
+# Maven
+**/target/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+
+# Test artifacts
+*.csv
+*.txt
+
+# Env
+.env
