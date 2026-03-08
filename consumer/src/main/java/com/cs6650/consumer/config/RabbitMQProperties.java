@@ -8,8 +8,8 @@ import org.springframework.stereotype.Component;
 public class RabbitMQProperties {
   private String host;
   private int port;
-  private String username;
-  private String password;
+  private String username = "admin";
+  private String password = "password123";
   private String virtualHost;
   private String queuePrefix;
   private int roomCount;
