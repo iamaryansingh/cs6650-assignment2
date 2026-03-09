@@ -5,6 +5,8 @@ import com.cs6650.server.model.ChatMessage;
 import com.cs6650.server.queue.QueuePublisher;
 import com.cs6650.server.service.RoomSessionRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,9 +40,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
   protected void handleTextMessage(WebSocketSession session, TextMessage textMessage) throws Exception {
     ChatMessage message = objectMapper.readValue(textMessage.getPayload(), ChatMessage.class);
     message.ensureDefaults();
+    if (message.getRoomId() == null || message.getRoomId().isBlank()) {
+      message.setRoomId(extractRoomIdFromUri(session));
+    }
 
     if (!message.isValid()) {
-      session.sendMessage(new TextMessage("{\"error\":\"Invalid message\"}"));
+      sendErrorResponse(session, List.of("Invalid message"));
       return;
     }
 
@@ -57,9 +62,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
       String payload = objectMapper.writeValueAsString(message);
       queuePublisher.publish(roomId, payload);
       metrics.incPublishedOk();
+      sendSuccessResponse(session, message);
     } catch (Exception ex) {
       metrics.incPublishedFailed();
-      session.sendMessage(new TextMessage("{\"error\":\"Publish failed\"}"));
+      sendErrorResponse(session, List.of("Publish failed"));
     }
   }
 
@@ -69,5 +75,37 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     if (roomId != null) {
       roomSessionRegistry.leave(roomId, session);
     }
+  }
+
+  private void sendSuccessResponse(WebSocketSession session, ChatMessage message) throws Exception {
+    Map<String, Object> response = Map.of(
+        "status", "success",
+        "message", message,
+        "serverTimestamp", Instant.now().toString(),
+        "roomId", message.getRoomId());
+    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
+  }
+
+  private void sendErrorResponse(WebSocketSession session, List<String> errors) throws Exception {
+    Map<String, Object> response = Map.of(
+        "status", "error",
+        "errors", errors,
+        "serverTimestamp", Instant.now().toString());
+    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
+  }
+
+  private String extractRoomIdFromUri(WebSocketSession session) {
+    if (session.getUri() == null || session.getUri().getPath() == null) {
+      return null;
+    }
+    String path = session.getUri().getPath();
+    int idx = path.lastIndexOf('/');
+    if (idx >= 0 && idx < path.length() - 1) {
+      String candidate = path.substring(idx + 1);
+      if (!candidate.isBlank() && !"chat".equals(candidate)) {
+        return candidate;
+      }
+    }
+    return null;
   }
 }

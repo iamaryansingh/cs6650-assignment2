@@ -1,5 +1,8 @@
 package com.cs6650.consumer.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class ChatMessage {
   private String messageId;
   private String roomId;

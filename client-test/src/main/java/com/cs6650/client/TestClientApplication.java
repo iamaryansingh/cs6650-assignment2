@@ -15,6 +15,9 @@ public class TestClientApplication {
     int threads = Integer.parseInt(args[1]);
     int totalMessages = Integer.parseInt(args[2]);
 
+    System.out.println("Target endpoint input: " + wsUrl);
+    System.out.println("Threads: " + threads + ", Total messages: " + totalMessages);
+
     ClientMetrics metrics = new ClientMetrics();
     LoadGenerator loadGenerator = new LoadGenerator(wsUrl, metrics);
 

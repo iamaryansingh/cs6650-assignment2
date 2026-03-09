@@ -15,7 +15,7 @@ public class LoadGenerator {
   private final ClientMetrics metrics;
 
   public LoadGenerator(String wsUrl, ClientMetrics metrics) {
-    this.wsUri = URI.create(wsUrl);
+    this.wsUri = normalizeWsUri(wsUrl);
     this.metrics = metrics;
   }
 
@@ -47,6 +47,8 @@ public class LoadGenerator {
     try {
       ws = wsFuture.join();
     } catch (Exception e) {
+      metrics.connectFail();
+      metrics.sampleError(rootMessage(e));
       for (int i = 0; i < count; i++) {
         metrics.failOne();
       }
@@ -65,6 +67,7 @@ public class LoadGenerator {
         metrics.sentOne();
       } catch (Exception e) {
         metrics.failOne();
+        metrics.sampleError(rootMessage(e));
       }
     }
 
@@ -72,5 +75,33 @@ public class LoadGenerator {
       ws.sendClose(WebSocket.NORMAL_CLOSURE, "done").join();
     } catch (Exception ignored) {
     }
+  }
+
+  private static URI normalizeWsUri(String input) {
+    String value = input.trim();
+
+    if (!value.contains("://")) {
+      value = "ws://" + value;
+    }
+    if (value.startsWith("http://")) {
+      value = "ws://" + value.substring("http://".length());
+    } else if (value.startsWith("https://")) {
+      value = "wss://" + value.substring("https://".length());
+    }
+
+    URI uri = URI.create(value);
+    String path = uri.getPath();
+    if (path == null || path.isBlank() || "/".equals(path)) {
+      return URI.create(value + (value.endsWith("/") ? "ws/chat" : "/ws/chat"));
+    }
+    return uri;
+  }
+
+  private static String rootMessage(Throwable throwable) {
+    Throwable t = throwable;
+    while (t.getCause() != null) {
+      t = t.getCause();
+    }
+    return t.getClass().getSimpleName() + ": " + (t.getMessage() == null ? "no message" : t.getMessage());
   }
 }

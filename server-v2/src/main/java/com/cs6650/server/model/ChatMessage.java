@@ -1,5 +1,6 @@
 package com.cs6650.server.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -14,6 +15,7 @@ public class ChatMessage {
   private String serverId;
   private String clientIp;
 
+  @JsonIgnore
   public void ensureDefaults() {
     if (messageId == null || messageId.isBlank()) {
       messageId = UUID.randomUUID().toString();
@@ -26,6 +28,7 @@ public class ChatMessage {
     }
   }
 
+  @JsonIgnore
   public boolean isValid() {
     return roomId != null && !roomId.isBlank() && userId != null && !userId.isBlank();
   }

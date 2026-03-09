@@ -13,8 +13,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ConsumerWorker {
+  private static final Logger log = LoggerFactory.getLogger(ConsumerWorker.class);
+
   private final int workerId;
   private final Connection connection;
   private final int prefetch;
@@ -71,11 +75,16 @@ public class ConsumerWorker {
           channel.basicAck(deliveryTag, false);
         } else {
           metrics.incFailed();
-          channel.basicNack(deliveryTag, false, true);
+          // Forwarder already retries at HTTP layer. Requeue false prevents poison-message loops.
+          channel.basicNack(deliveryTag, false, false);
+          log.warn("Worker {} failed to forward messageId={} roomId={} after retries; dropped",
+              workerId, message.getMessageId(), message.getRoomId());
         }
       } catch (Exception e) {
         metrics.incFailed();
-        channel.basicNack(deliveryTag, false, true);
+        channel.basicNack(deliveryTag, false, false);
+        log.warn("Worker {} failed to process deliveryTag={} payloadLength={} error={}",
+            workerId, deliveryTag, payload.length(), e.toString());
       }
     };
 
