@@ -24,6 +24,7 @@ public class HealthController {
         "workers", manager.workerCount(),
         "assignments", manager.workerAssignments(),
         "messagesProcessed", metrics.getMessagesProcessed(),
+        "throughputMsgPerSec", metrics.getThroughputPerSecond(),
         "consumed", metrics.getConsumed(),
         "forwarded", metrics.getForwarded(),
         "failed", metrics.getFailed(),
@@ -34,6 +35,7 @@ public class HealthController {
   public ResponseEntity<Map<String, Object>> metrics() {
     return ResponseEntity.ok(Map.of(
         "messagesProcessed", metrics.getMessagesProcessed(),
+        "throughputMsgPerSec", metrics.getThroughputPerSecond(),
         "consumed", metrics.getConsumed(),
         "forwarded", metrics.getForwarded(),
         "failed", metrics.getFailed(),

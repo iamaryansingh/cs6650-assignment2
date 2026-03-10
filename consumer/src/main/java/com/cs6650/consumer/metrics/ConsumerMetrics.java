@@ -5,6 +5,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class ConsumerMetrics {
+  private final long startedAtMs = System.currentTimeMillis();
   private final AtomicLong messagesProcessed = new AtomicLong();
   private final AtomicLong consumed = new AtomicLong();
   private final AtomicLong forwarded = new AtomicLong();
@@ -24,4 +25,9 @@ public class ConsumerMetrics {
   public long getForwarded() { return forwarded.get(); }
   public long getFailed() { return failed.get(); }
   public long getDuplicates() { return duplicates.get(); }
+
+  public double getThroughputPerSecond() {
+    long elapsedMs = Math.max(1, System.currentTimeMillis() - startedAtMs);
+    return messagesProcessed.get() * 1000.0 / elapsedMs;
+  }
 }
