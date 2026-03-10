@@ -8,9 +8,14 @@ import java.net.http.WebSocket;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 public class LoadGenerator {
+  private static final int TEXT_PERCENT = 90;
+  private static final int JOIN_PERCENT = 5;
+  private static final int LEAVE_PERCENT = 5;
+
   private final URI wsUri;
   private final ClientMetrics metrics;
 
@@ -60,7 +65,8 @@ public class LoadGenerator {
       msg.userId = "user-" + threadId;
       msg.username = "User" + threadId;
       msg.roomId = Integer.toString((i % 20) + 1);
-      msg.message = "load message " + i;
+      msg.messageType = chooseMessageType();
+      msg.message = buildMessageBody(msg.messageType, i);
 
       try {
         ws.sendText(msg.toJson(), true).join();
@@ -75,6 +81,25 @@ public class LoadGenerator {
       ws.sendClose(WebSocket.NORMAL_CLOSURE, "done").join();
     } catch (Exception ignored) {
     }
+  }
+
+  private static String chooseMessageType() {
+    int roll = ThreadLocalRandom.current().nextInt(100);
+    if (roll < TEXT_PERCENT) {
+      return "TEXT";
+    }
+    if (roll < TEXT_PERCENT + JOIN_PERCENT) {
+      return "JOIN";
+    }
+    return "LEAVE";
+  }
+
+  private static String buildMessageBody(String type, int index) {
+    return switch (type) {
+      case "JOIN" -> "user joined room #" + index;
+      case "LEAVE" -> "user left room #" + index;
+      default -> "load text message " + index;
+    };
   }
 
   private static URI normalizeWsUri(String input) {
