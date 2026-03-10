@@ -6,6 +6,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -16,6 +17,7 @@ public class LoadGenerator {
   private static final int JOIN_PERCENT = 5;
   private static final int LEAVE_PERCENT = 5;
   private static final int SEND_RETRY_LIMIT = 2;
+  private static final long SEND_TIMEOUT_SECONDS = 10L;
 
   private final URI wsUri;
   private final ClientMetrics metrics;
@@ -63,14 +65,22 @@ public class LoadGenerator {
       msg.roomId = Integer.toString((i % 20) + 1);
       msg.messageType = chooseMessageType();
       msg.message = buildMessageBody(msg.messageType, i);
+      String payload;
+      try {
+        payload = msg.toJson();
+      } catch (Exception e) {
+        metrics.failOne();
+        metrics.sampleError(rootMessage(e));
+        continue;
+      }
 
       boolean sent = false;
       for (int attempt = 1; attempt <= SEND_RETRY_LIMIT && !sent; attempt++) {
         try {
-          ws.sendText(msg.toJson(), true).join();
+          ws.sendText(payload, true).orTimeout(SEND_TIMEOUT_SECONDS, TimeUnit.SECONDS).join();
           metrics.sentOne(msg.roomId, msg.messageType);
           sent = true;
-        } catch (Exception e) {
+        } catch (CompletionException e) {
           metrics.sampleError(rootMessage(e));
           if (attempt < SEND_RETRY_LIMIT) {
             try {
@@ -87,6 +97,10 @@ public class LoadGenerator {
       }
       if (!sent) {
         metrics.failOne();
+      }
+
+      if ((i + 1) % 10000 == 0) {
+        System.out.println("Thread-" + threadId + " progress: " + (i + 1) + "/" + count);
       }
     }
 
