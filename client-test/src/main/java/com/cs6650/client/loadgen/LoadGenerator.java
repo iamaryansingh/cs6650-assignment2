@@ -15,6 +15,7 @@ public class LoadGenerator {
   private static final int TEXT_PERCENT = 90;
   private static final int JOIN_PERCENT = 5;
   private static final int LEAVE_PERCENT = 5;
+  private static final int SEND_RETRY_LIMIT = 2;
 
   private final URI wsUri;
   private final ClientMetrics metrics;
@@ -45,15 +46,10 @@ public class LoadGenerator {
 
   private void send(int threadId, int count) {
     HttpClient client = HttpClient.newHttpClient();
-    CompletableFuture<WebSocket> wsFuture = client.newWebSocketBuilder()
-        .buildAsync(wsUri, new WebSocket.Listener() {});
-
-    WebSocket ws;
-    try {
-      ws = wsFuture.join();
-    } catch (Exception e) {
+    WebSocket ws = connect(client);
+    if (ws == null) {
       metrics.connectFail();
-      metrics.sampleError(rootMessage(e));
+      metrics.sampleError("Failed to establish initial websocket connection");
       for (int i = 0; i < count; i++) {
         metrics.failOne();
       }
@@ -68,18 +64,47 @@ public class LoadGenerator {
       msg.messageType = chooseMessageType();
       msg.message = buildMessageBody(msg.messageType, i);
 
-      try {
-        ws.sendText(msg.toJson(), true).join();
-        metrics.sentOne(msg.roomId, msg.messageType);
-      } catch (Exception e) {
+      boolean sent = false;
+      for (int attempt = 1; attempt <= SEND_RETRY_LIMIT && !sent; attempt++) {
+        try {
+          ws.sendText(msg.toJson(), true).join();
+          metrics.sentOne(msg.roomId, msg.messageType);
+          sent = true;
+        } catch (Exception e) {
+          metrics.sampleError(rootMessage(e));
+          if (attempt < SEND_RETRY_LIMIT) {
+            try {
+              ws.abort();
+            } catch (Exception ignored) {
+            }
+            ws = connect(client);
+            if (ws == null) {
+              metrics.connectFail();
+              break;
+            }
+          }
+        }
+      }
+      if (!sent) {
         metrics.failOne();
-        metrics.sampleError(rootMessage(e));
       }
     }
 
     try {
       ws.sendClose(WebSocket.NORMAL_CLOSURE, "done").join();
     } catch (Exception ignored) {
+    }
+  }
+
+  private WebSocket connect(HttpClient client) {
+    try {
+      return client.newWebSocketBuilder()
+          .connectTimeout(java.time.Duration.ofSeconds(5))
+          .buildAsync(wsUri, new WebSocket.Listener() {})
+          .join();
+    } catch (Exception e) {
+      metrics.sampleError(rootMessage(e));
+      return null;
     }
   }
 
