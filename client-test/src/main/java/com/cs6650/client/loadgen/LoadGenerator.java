@@ -64,7 +64,7 @@ public class LoadGenerator {
 
       try {
         ws.sendText(msg.toJson(), true).join();
-        metrics.sentOne();
+        metrics.sentOne(msg.roomId, msg.messageType);
       } catch (Exception e) {
         metrics.failOne();
         metrics.sampleError(rootMessage(e));
