@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -16,9 +17,11 @@ public class RoomSessionRegistry {
   private final Map<String, Set<WebSocketSession>> userSessions = new ConcurrentHashMap<>();
   private final Map<String, String> sessionToUser = new ConcurrentHashMap<>();
   private final Map<String, String> sessionToUsername = new ConcurrentHashMap<>();
+  private final Map<String, ReentrantLock> sessionSendLocks = new ConcurrentHashMap<>();
 
   public void join(String roomId, String userId, String username, WebSocketSession session) {
     roomSessions.computeIfAbsent(roomId, id -> ConcurrentHashMap.newKeySet()).add(session);
+    sessionSendLocks.computeIfAbsent(session.getId(), id -> new ReentrantLock());
     if (userId != null && !userId.isBlank()) {
       sessionToUser.put(session.getId(), userId);
       if (username != null && !username.isBlank()) {
@@ -39,6 +42,7 @@ public class RoomSessionRegistry {
     if (sessions.isEmpty()) {
       roomSessions.remove(roomId);
     }
+    sessionSendLocks.remove(session.getId());
 
     String userId = sessionToUser.remove(session.getId());
     sessionToUsername.remove(session.getId());
@@ -72,12 +76,28 @@ public class RoomSessionRegistry {
         continue;
       }
       try {
-        session.sendMessage(textMessage);
+        ReentrantLock lock = sessionSendLocks.computeIfAbsent(session.getId(), id -> new ReentrantLock());
+        lock.lock();
+        try {
+          session.sendMessage(textMessage);
+        } finally {
+          lock.unlock();
+        }
         sent++;
       } catch (IOException ignored) {
       }
     }
     return sent;
+  }
+
+  public void sendDirect(WebSocketSession session, String payload) throws IOException {
+    ReentrantLock lock = sessionSendLocks.computeIfAbsent(session.getId(), id -> new ReentrantLock());
+    lock.lock();
+    try {
+      session.sendMessage(new TextMessage(payload));
+    } finally {
+      lock.unlock();
+    }
   }
 
   public int roomCount() {

@@ -83,7 +83,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         "message", message,
         "serverTimestamp", Instant.now().toString(),
         "roomId", message.getRoomId());
-    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
+    roomSessionRegistry.sendDirect(session, objectMapper.writeValueAsString(response));
   }
 
   private void sendErrorResponse(WebSocketSession session, List<String> errors) throws Exception {
@@ -91,7 +91,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         "status", "error",
         "errors", errors,
         "serverTimestamp", Instant.now().toString());
-    session.sendMessage(new TextMessage(objectMapper.writeValueAsString(response)));
+    roomSessionRegistry.sendDirect(session, objectMapper.writeValueAsString(response));
   }
 
   private String extractRoomIdFromUri(WebSocketSession session) {
