@@ -30,7 +30,7 @@ public class ChannelPool {
     factory.setAutomaticRecoveryEnabled(true);
     factory.setNetworkRecoveryInterval(3000);
 
-    this.connection = factory.newConnection("cs6650-server");
+    this.connection = factory.newConnection("server-v2-producer");
     this.pool = new ArrayBlockingQueue<>(props.getChannelPoolSize());
 
     for (int i = 0; i < props.getChannelPoolSize(); i++) {

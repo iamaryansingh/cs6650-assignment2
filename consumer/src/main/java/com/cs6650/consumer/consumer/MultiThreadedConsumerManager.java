@@ -22,7 +22,7 @@ public class MultiThreadedConsumerManager {
   private final BroadcastForwarder forwarder;
   private final ConsumerMetrics metrics;
 
-  private final List<Connection> connections = new ArrayList<>();
+  private Connection sharedConnection;
   private final List<ConsumerWorker> workers = new ArrayList<>();
   private final Map<String, Long> dedupeCache = new ConcurrentHashMap<>();
   private final Map<Integer, List<String>> workerQueues = new ConcurrentHashMap<>();
@@ -42,25 +42,22 @@ public class MultiThreadedConsumerManager {
   @PostConstruct
   public void start() throws Exception {
     int workerCount = Math.max(1, consumerProperties.getWorkerCount());
+    ConnectionFactory factory = new ConnectionFactory();
+    factory.setHost(rabbitMQProperties.getHost());
+    factory.setPort(rabbitMQProperties.getPort());
+    factory.setUsername(rabbitMQProperties.getUsername());
+    factory.setPassword(rabbitMQProperties.getPassword());
+    factory.setVirtualHost(rabbitMQProperties.getVirtualHost());
+    factory.setAutomaticRecoveryEnabled(true);
+    factory.setNetworkRecoveryInterval(3000);
+    sharedConnection = factory.newConnection("consumer-pool");
 
     for (int idx = 0; idx < workerCount; idx++) {
-      ConnectionFactory factory = new ConnectionFactory();
-      factory.setHost(rabbitMQProperties.getHost());
-      factory.setPort(rabbitMQProperties.getPort());
-      factory.setUsername(rabbitMQProperties.getUsername());
-      factory.setPassword(rabbitMQProperties.getPassword());
-      factory.setVirtualHost(rabbitMQProperties.getVirtualHost());
-      factory.setAutomaticRecoveryEnabled(true);
-      factory.setNetworkRecoveryInterval(3000);
-
-      Connection connection = factory.newConnection("consumer-worker-" + idx);
-      connections.add(connection);
-
       List<String> queues = assignedQueues(idx, workerCount);
       workerQueues.put(idx, List.copyOf(queues));
       ConsumerWorker worker = new ConsumerWorker(
           idx,
-          connection,
+          sharedConnection,
           rabbitMQProperties.getPrefetch(),
           queues,
           forwarder,
@@ -90,9 +87,9 @@ public class MultiThreadedConsumerManager {
     for (ConsumerWorker worker : workers) {
       worker.stop();
     }
-    for (Connection connection : connections) {
+    if (sharedConnection != null) {
       try {
-        connection.close();
+        sharedConnection.close();
       } catch (Exception ignored) {
       }
     }
