@@ -2,6 +2,7 @@ package com.cs6650.consumer.service;
 
 import com.cs6650.consumer.config.ConsumerProperties;
 import com.cs6650.consumer.model.ChatMessage;
+import com.cs6650.consumer.util.RetryExecutor;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -49,7 +50,7 @@ public class BroadcastForwarder {
   }
 
   private boolean postWithRetry(String url, String body, int maxRetries) {
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+    return RetryExecutor.run(() -> {
       try {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(url))
@@ -59,15 +60,14 @@ public class BroadcastForwarder {
             .build();
         HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() >= 200 && response.statusCode() < 300) {
-          return true;
+          return 1;
         }
-        log.warn("Broadcast POST non-2xx. url={} attempt={}/{} status={} body={}",
-            url, attempt, maxRetries, response.statusCode(), response.body());
+        log.warn("Broadcast POST non-2xx. url={} status={} body={}",
+            url, response.statusCode(), response.body());
       } catch (Exception ignored) {
-        log.warn("Broadcast POST exception. url={} attempt={}/{} error={}",
-            url, attempt, maxRetries, ignored.toString());
+        log.warn("Broadcast POST exception. url={} error={}", url, ignored.toString());
       }
-    }
-    return false;
+      return 0;
+    }, maxRetries);
   }
 }
