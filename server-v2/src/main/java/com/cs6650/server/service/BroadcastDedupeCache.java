@@ -9,6 +9,8 @@ import org.springframework.stereotype.Component;
 public class BroadcastDedupeCache {
   private final Map<String, Long> seenMessageIds = new ConcurrentHashMap<>();
   private final long ttlMs;
+  private volatile long lastCleanupMs = 0L;
+  private static final long CLEANUP_INTERVAL_MS = 5000L;
 
   public BroadcastDedupeCache(@Value("${server.broadcast.dedupe-ttl-ms}") long ttlMs) {
     this.ttlMs = ttlMs;
@@ -19,7 +21,10 @@ public class BroadcastDedupeCache {
       return true;
     }
     long now = System.currentTimeMillis();
-    cleanup(now);
+    if ((now - lastCleanupMs) >= CLEANUP_INTERVAL_MS) {
+      cleanup(now);
+      lastCleanupMs = now;
+    }
     return seenMessageIds.putIfAbsent(messageId, now) == null;
   }
 

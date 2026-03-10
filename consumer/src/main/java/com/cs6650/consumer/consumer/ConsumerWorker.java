@@ -28,6 +28,8 @@ public class ConsumerWorker {
   private final Map<String, Long> dedupeCache;
   private final long dedupeTtlMs;
   private final ObjectMapper objectMapper = new ObjectMapper();
+  private volatile long lastDedupeCleanupMs = 0L;
+  private static final long DEDUPE_CLEANUP_INTERVAL_MS = 5000L;
 
   private Channel channel;
   private final List<String> consumerTags = new ArrayList<>();
@@ -114,7 +116,10 @@ public class ConsumerWorker {
       return true;
     }
     long now = System.currentTimeMillis();
-    dedupeCache.entrySet().removeIf(e -> (now - e.getValue()) > dedupeTtlMs);
+    if ((now - lastDedupeCleanupMs) >= DEDUPE_CLEANUP_INTERVAL_MS) {
+      dedupeCache.entrySet().removeIf(e -> (now - e.getValue()) > dedupeTtlMs);
+      lastDedupeCleanupMs = now;
+    }
     return dedupeCache.putIfAbsent(workerId + ":" + messageId, now) == null;
   }
 }

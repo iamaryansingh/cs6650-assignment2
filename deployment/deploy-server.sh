@@ -17,10 +17,13 @@ mkdir -p logs
 pkill -f "chat-server-v2.*${PORT}" || true
 
 nohup java \
-  -Xms512m -Xmx2g \
+  -Xms256m -Xmx512m \
   -Dserver.port="$PORT" \
   -DSERVER_INSTANCE_ID="$INSTANCE_ID" \
   -DRABBITMQ_HOST="$RABBITMQ_HOST" \
+  -DRABBITMQ_CHANNEL_POOL_SIZE=50 \
+  -DSERVER_TOMCAT_THREADS_MAX=80 \
+  -DSERVER_TOMCAT_THREADS_MIN_SPARE=10 \
   -jar "$JAR_PATH" > "logs/server-${PORT}.log" 2>&1 &
 
 sleep 3
