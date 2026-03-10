@@ -80,9 +80,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
   private void sendSuccessResponse(WebSocketSession session, ChatMessage message) throws Exception {
     Map<String, Object> response = Map.of(
         "status", "success",
-        "message", message,
+        "messageId", message.getMessageId(),
+        "roomId", message.getRoomId(),
         "serverTimestamp", Instant.now().toString(),
-        "roomId", message.getRoomId());
+        "messageType", message.getMessageType());
     roomSessionRegistry.sendDirect(session, objectMapper.writeValueAsString(response));
   }
 
