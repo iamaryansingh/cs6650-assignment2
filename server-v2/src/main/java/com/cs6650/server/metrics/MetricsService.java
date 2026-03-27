@@ -6,7 +6,6 @@ import com.cs6650.server.metrics.dto.RoomActivity;
 import com.cs6650.server.metrics.dto.RoomMessageResult;
 import com.cs6650.server.metrics.dto.UserMessageResult;
 import com.cs6650.server.metrics.dto.UserRoomsResult;
-import com.cs6650.server.repository.MessageRepository;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -15,25 +14,25 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Assignment 3 Part 1: Metrics service for all core and analytics queries.
- * Simple in-memory cache with 5s TTL for analytics queries (Part 3).
+ * Assignment 3 Part 1: Metrics queries using JdbcTemplate.
+ * JdbcTemplate has no startup cost — connects lazily on first query.
+ * Simple 5s in-memory cache for analytics queries (Part 3).
  */
 @Service
-@Transactional(readOnly = true)
 public class MetricsService {
 
   private static final Logger log = LoggerFactory.getLogger(MetricsService.class);
   private static final long CACHE_TTL_MS = 5000;
 
-  private final MessageRepository repository;
+  private final JdbcTemplate jdbc;
   private final Map<String, CachedResult> cache = new ConcurrentHashMap<>();
 
-  public MetricsService(MessageRepository repository) {
-    this.repository = repository;
+  public MetricsService(JdbcTemplate jdbc) {
+    this.jdbc = jdbc;
   }
 
   // ================================================================
@@ -41,10 +40,13 @@ public class MetricsService {
   // ================================================================
   public RoomMessageResult getRoomMessages(String roomId, Instant start, Instant end) {
     long t0 = System.nanoTime();
-    var messages = repository.findByRoomIdAndTimestampBetweenOrderByTimestampAsc(roomId, start, end);
-    long ms = (System.nanoTime() - t0) / 1_000_000;
+    List<Map<String, Object>> rows = jdbc.queryForList(
+        "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
+        "FROM messages WHERE room_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC",
+        roomId, start, end);
+    long ms = nanos(t0);
     warnIfSlow("getRoomMessages", ms, 100);
-    return new RoomMessageResult(roomId, start.toString(), end.toString(), messages.size(), messages, ms);
+    return new RoomMessageResult(roomId, start.toString(), end.toString(), rows.size(), rows, ms);
   }
 
   // ================================================================
@@ -52,12 +54,21 @@ public class MetricsService {
   // ================================================================
   public UserMessageResult getUserMessages(String userId, Instant start, Instant end) {
     long t0 = System.nanoTime();
-    var messages = (start != null && end != null)
-        ? repository.findByUserIdAndTimestampBetweenOrderByTimestampDesc(userId, start, end)
-        : repository.findByUserIdOrderByTimestampDesc(userId);
-    long ms = (System.nanoTime() - t0) / 1_000_000;
+    List<Map<String, Object>> rows;
+    if (start != null && end != null) {
+      rows = jdbc.queryForList(
+          "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
+          "FROM messages WHERE user_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC",
+          userId, start, end);
+    } else {
+      rows = jdbc.queryForList(
+          "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
+          "FROM messages WHERE user_id = ? ORDER BY timestamp DESC",
+          userId);
+    }
+    long ms = nanos(t0);
     warnIfSlow("getUserMessages", ms, 200);
-    return new UserMessageResult(userId, messages.size(), messages, ms);
+    return new UserMessageResult(userId, rows.size(), rows, ms);
   }
 
   // ================================================================
@@ -65,8 +76,10 @@ public class MetricsService {
   // ================================================================
   public ActiveUsersResult getActiveUsers(Instant start, Instant end) {
     long t0 = System.nanoTime();
-    Long count = repository.countDistinctUsersByTimestampBetween(start, end);
-    long ms = (System.nanoTime() - t0) / 1_000_000;
+    Long count = jdbc.queryForObject(
+        "SELECT COUNT(DISTINCT user_id) FROM messages WHERE timestamp BETWEEN ? AND ?",
+        Long.class, start, end);
+    long ms = nanos(t0);
     warnIfSlow("getActiveUsers", ms, 500);
     return new ActiveUsersResult(count == null ? 0 : count, start.toString(), end.toString(), ms);
   }
@@ -76,15 +89,18 @@ public class MetricsService {
   // ================================================================
   public UserRoomsResult getUserRooms(String userId) {
     long t0 = System.nanoTime();
-    List<Object[]> rows = repository.findRoomsWithActivityByUserId(userId);
+    List<Map<String, Object>> rows = jdbc.queryForList(
+        "SELECT room_id, MAX(timestamp) AS last_activity, COUNT(*) AS message_count " +
+        "FROM messages WHERE user_id = ? GROUP BY room_id ORDER BY last_activity DESC",
+        userId);
     List<RoomActivity> rooms = new ArrayList<>();
-    for (Object[] row : rows) {
+    for (Map<String, Object> row : rows) {
       rooms.add(new RoomActivity(
-          (String) row[0],
-          row[1] == null ? null : row[1].toString(),
-          row[2] == null ? 0L : ((Number) row[2]).longValue()));
+          (String) row.get("room_id"),
+          row.get("last_activity") == null ? null : row.get("last_activity").toString(),
+          ((Number) row.get("message_count")).longValue()));
     }
-    long ms = (System.nanoTime() - t0) / 1_000_000;
+    long ms = nanos(t0);
     warnIfSlow("getUserRooms", ms, 50);
     return new UserRoomsResult(userId, rooms, ms);
   }
@@ -100,40 +116,42 @@ public class MetricsService {
     }
 
     long t0 = System.nanoTime();
-    long total = repository.count();
 
-    // Throughput from per-second bucketed counts
-    List<Object[]> perSecond = repository.getMessagesPerSecond();
+    Long total = jdbc.queryForObject("SELECT COUNT(*) FROM messages", Long.class);
+    if (total == null) total = 0L;
+
+    // Average messages per second from bucketed counts
+    List<Map<String, Object>> perSecond = jdbc.queryForList(
+        "SELECT date_trunc('second', timestamp) AS ts, COUNT(*) AS cnt FROM messages GROUP BY ts");
     double avgPerSecond = perSecond.isEmpty() ? 0.0
-        : perSecond.stream().mapToLong(r -> ((Number) r[1]).longValue()).average().orElse(0.0);
+        : perSecond.stream().mapToLong(r -> ((Number) r.get("cnt")).longValue()).average().orElse(0.0);
 
-    // Top users
+    // Top N users
     List<Map<String, Object>> topUsers = new ArrayList<>();
-    for (Object[] row : repository.findTopUsers(topN)) {
-      Map<String, Object> m = new HashMap<>();
-      m.put("userId", row[0]);
-      m.put("username", row[1]);
-      m.put("messageCount", ((Number) row[2]).longValue());
+    for (Map<String, Object> row : jdbc.queryForList(
+        "SELECT user_id, username, COUNT(*) AS message_count FROM messages " +
+        "GROUP BY user_id, username ORDER BY message_count DESC LIMIT ?", topN)) {
+      Map<String, Object> m = new HashMap<>(row);
       topUsers.add(m);
     }
 
-    // Top rooms
+    // Top N rooms
     List<Map<String, Object>> topRooms = new ArrayList<>();
-    for (Object[] row : repository.findTopRooms(topN)) {
-      Map<String, Object> m = new HashMap<>();
-      m.put("roomId", row[0]);
-      m.put("messageCount", ((Number) row[1]).longValue());
-      m.put("uniqueUsers", ((Number) row[2]).longValue());
+    for (Map<String, Object> row : jdbc.queryForList(
+        "SELECT room_id, COUNT(*) AS message_count, COUNT(DISTINCT user_id) AS unique_users " +
+        "FROM messages GROUP BY room_id ORDER BY message_count DESC LIMIT ?", topN)) {
+      Map<String, Object> m = new HashMap<>(row);
       topRooms.add(m);
     }
 
-    long ms = (System.nanoTime() - t0) / 1_000_000;
+    long ms = nanos(t0);
     AnalyticsSummary result = new AnalyticsSummary(
         total, avgPerSecond, avgPerSecond * 60, topUsers, topRooms, ms);
-
     cache.put(cacheKey, new CachedResult(result, System.currentTimeMillis() + CACHE_TTL_MS));
     return result;
   }
+
+  private long nanos(long t0) { return (System.nanoTime() - t0) / 1_000_000; }
 
   private void warnIfSlow(String query, long ms, long targetMs) {
     if (ms > targetMs) {
