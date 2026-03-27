@@ -6,6 +6,7 @@ import com.cs6650.server.metrics.dto.RoomActivity;
 import com.cs6650.server.metrics.dto.RoomMessageResult;
 import com.cs6650.server.metrics.dto.UserMessageResult;
 import com.cs6650.server.metrics.dto.UserRoomsResult;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -43,7 +44,7 @@ public class MetricsService {
     List<Map<String, Object>> rows = jdbc.queryForList(
         "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
         "FROM messages WHERE room_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC",
-        roomId, start, end);
+        roomId, Timestamp.from(start), Timestamp.from(end));
     long ms = nanos(t0);
     warnIfSlow("getRoomMessages", ms, 100);
     return new RoomMessageResult(roomId, start.toString(), end.toString(), rows.size(), rows, ms);
@@ -59,7 +60,7 @@ public class MetricsService {
       rows = jdbc.queryForList(
           "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
           "FROM messages WHERE user_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC",
-          userId, start, end);
+          userId, Timestamp.from(start), Timestamp.from(end));
     } else {
       rows = jdbc.queryForList(
           "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
@@ -78,7 +79,7 @@ public class MetricsService {
     long t0 = System.nanoTime();
     Long count = jdbc.queryForObject(
         "SELECT COUNT(DISTINCT user_id) FROM messages WHERE timestamp BETWEEN ? AND ?",
-        Long.class, start, end);
+        Long.class, Timestamp.from(start), Timestamp.from(end));
     long ms = nanos(t0);
     warnIfSlow("getActiveUsers", ms, 500);
     return new ActiveUsersResult(count == null ? 0 : count, start.toString(), end.toString(), ms);
