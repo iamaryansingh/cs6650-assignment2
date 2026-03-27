@@ -16,6 +16,7 @@ logs/
 # Test artifacts
 *.csv
 *.txt
+metrics-results-*.json
 
 # Env
 .env

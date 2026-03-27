@@ -1,36 +1,110 @@
-# Architecture
+# CS6650 Assignment 2 - Architecture Document
 
-## Components
+## 1. System Architecture Diagram
 
-1. WebSocket Producers (`server-v2`)
-- Accept client WebSocket traffic at `/ws/chat`
-- Validate and enrich messages (serverId, timestamp, messageId)
-- Publish to RabbitMQ topic exchange `chat.exchange`
+```mermaid
+flowchart LR
+    C[Load Client] --> LB[AWS ALB]
+    LB --> S1[WebSocket Server 1]
+    LB --> S2[WebSocket Server 2]
+    LB --> S3[WebSocket Server 3]
+    LB --> S4[WebSocket Server 4]
 
-2. RabbitMQ
-- Topic exchange routes by room: `room.{roomId}`
-- One durable queue per room (`room.1` to `room.20`)
-- Dead-letter setup for failed messages
+    S1 --> EX[(RabbitMQ Exchange\nchat.exchange)]
+    S2 --> EX
+    S3 --> EX
+    S4 --> EX
 
-3. Consumer Pool (`consumer`)
-- Configurable worker count
-- Workers subscribe to room queues with bounded prefetch
-- For each consumed message, forwards to all server internal broadcast endpoints
-- Ack only after successful forward; otherwise nacks with retry
+    EX --> Q1[(room.1)]
+    EX --> Q2[(room.2)]
+    EX --> Q20[(room.20)]
 
-4. Room Broadcast (`server-v2` internal API)
-- Endpoint `/internal/broadcast`
-- Delivers to local in-memory room sessions only
-- Dedupe cache avoids duplicate deliveries under retries
+    Q1 --> CON[Consumer Pool]
+    Q2 --> CON
+    Q20 --> CON
 
-## Message Flow
+    CON --> B1[Server Internal Broadcast API]
+    B1 --> WS[(Connected WS Sessions)]
+```
 
-Client -> WebSocket Server -> RabbitMQ Exchange -> Room Queue -> Consumer -> Server Broadcast API -> WebSocket Sessions
+## 2. Message Flow Sequence Diagram
 
-## Throughput/Scalability additions
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server as WebSocket Server
+    participant MQ as RabbitMQ
+    participant Consumer
+    participant Broadcast as /internal/broadcast
 
-- Channel pool with publisher confirms
-- Consumer thread pool and configurable prefetch
-- Dedupe caches on both consumer and server paths
-- Backpressure-aware async WebSocket send
-- Internal batch-friendly forwarding abstraction
+    Client->>Server: WebSocket message (roomId, userId, type, payload)
+    Server->>Server: Validate + enrich (messageId, timestamp, serverId, clientIp)
+    Server->>MQ: Publish to chat.exchange with key room.{roomId}
+    Server-->>Client: ACK response (status, messageId, roomId)
+
+    MQ->>Consumer: Deliver from room.{id} queue
+    Consumer->>Consumer: Idempotency check (messageId)
+    Consumer->>Broadcast: POST /internal/broadcast
+    Broadcast->>Broadcast: Room lookup + per-session synchronized send
+    Broadcast-->>Consumer: 200 OK
+    Consumer->>MQ: ACK message
+```
+
+## 3. Queue Topology Design
+
+- Broker: RabbitMQ on dedicated EC2 instance.
+- Exchange: `chat.exchange` (type: topic, durable).
+- Routing key: `room.{roomId}`.
+- Queues: `room.1` to `room.20` (durable).
+- Queue controls:
+  - `x-message-ttl`: 120000 ms
+  - `x-max-length`: 50000
+- Delivery mode: persistent messages.
+- Consumer prefetch: configurable (`rabbitmq.prefetch`).
+
+## 4. Consumer Threading Model
+
+- Single AMQP connection: `consumer-pool`.
+- N worker threads (configurable with `consumer.worker-count`; current default 10).
+- Each worker owns one channel and consumes a fair subset of room queues.
+- Message handling per worker:
+  1. Deserialize message.
+  2. Deduplicate using in-memory TTL cache.
+  3. Forward to server internal broadcast endpoint(s).
+  4. ACK on success.
+  5. NACK with `requeue=false` on terminal failure.
+
+## 5. Load Balancing Configuration
+
+- Front door: AWS Application Load Balancer.
+- Target group: all WebSocket server instances.
+- Sticky sessions: enabled for stable WebSocket affinity.
+- Health check:
+  - Path: `/health`
+  - Interval: 30s
+  - Timeout: 5s
+  - Healthy threshold: 2
+  - Unhealthy threshold: 3
+- Idle timeout: > 60 seconds for WebSocket support.
+
+## 6. Failure Handling Strategies
+
+- Producer-side:
+  - RabbitMQ channel pooling to avoid connection churn.
+  - Publisher confirms enabled.
+  - Publish failure tracked in metrics (`publishedFailed`).
+- Consumer-side:
+  - Retry wrapper for broadcast HTTP calls.
+  - Idempotency cache to ignore duplicate messageIds.
+  - Terminal failures are dropped (`requeue=false`) to avoid poison-message loops.
+- WebSocket broadcast:
+  - Per-session send lock prevents concurrent writes (`TEXT_PARTIAL_WRITING` issue).
+- Health/observability:
+  - Server `/health`: rooms, sessions, activeUsers, publish/broadcast counters.
+  - Consumer `/health` and `/metrics`: processed, forwarded, failed, throughput.
+
+## 7. Design Notes (Brief)
+
+- Assignment 2 extends Assignment 1 by decoupling ingest from distribution via RabbitMQ.
+- This architecture provides at-least-once delivery with idempotent processing.
+- Horizontal scaling is done by adding server instances behind ALB and tuning consumer concurrency.
