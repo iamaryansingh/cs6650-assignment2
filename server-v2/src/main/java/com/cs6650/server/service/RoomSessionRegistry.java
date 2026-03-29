@@ -90,11 +90,15 @@ public class RoomSessionRegistry {
     return sent;
   }
 
+  // don't try to send if the client already disconnected — just skip it
   public void sendDirect(WebSocketSession session, String payload) throws IOException {
+    if (!session.isOpen()) return;
     ReentrantLock lock = sessionSendLocks.computeIfAbsent(session.getId(), id -> new ReentrantLock());
     lock.lock();
     try {
-      session.sendMessage(new TextMessage(payload));
+      if (session.isOpen()) {
+        session.sendMessage(new TextMessage(payload));
+      }
     } finally {
       lock.unlock();
     }

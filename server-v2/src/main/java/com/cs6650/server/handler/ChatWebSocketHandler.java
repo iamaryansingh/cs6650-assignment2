@@ -62,11 +62,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
       String payload = objectMapper.writeValueAsString(message);
       queuePublisher.publish(roomId, payload);
       metrics.incPublishedOk();
-      sendSuccessResponse(session, message);
     } catch (Exception ex) {
       metrics.incPublishedFailed();
       sendErrorResponse(session, List.of("Publish failed"));
+      return;
     }
+    sendSuccessResponse(session, message);
   }
 
   @Override
@@ -77,22 +78,31 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
   }
 
-  private void sendSuccessResponse(WebSocketSession session, ChatMessage message) throws Exception {
-    Map<String, Object> response = Map.of(
-        "status", "success",
-        "messageId", message.getMessageId(),
-        "roomId", message.getRoomId(),
-        "serverTimestamp", Instant.now().toString(),
-        "messageType", message.getMessageType());
-    roomSessionRegistry.sendDirect(session, objectMapper.writeValueAsString(response));
+  // if the session closed before we could reply, just move on — no need to crash the handler
+  private void sendSuccessResponse(WebSocketSession session, ChatMessage message) {
+    try {
+      Map<String, Object> response = Map.of(
+          "status", "success",
+          "messageId", message.getMessageId(),
+          "roomId", message.getRoomId(),
+          "serverTimestamp", Instant.now().toString(),
+          "messageType", message.getMessageType());
+      roomSessionRegistry.sendDirect(session, objectMapper.writeValueAsString(response));
+    } catch (Exception ignored) {
+      // Session closed between message receipt and response — not an error
+    }
   }
 
-  private void sendErrorResponse(WebSocketSession session, List<String> errors) throws Exception {
-    Map<String, Object> response = Map.of(
-        "status", "error",
-        "errors", errors,
-        "serverTimestamp", Instant.now().toString());
-    roomSessionRegistry.sendDirect(session, objectMapper.writeValueAsString(response));
+  private void sendErrorResponse(WebSocketSession session, List<String> errors) {
+    try {
+      Map<String, Object> response = Map.of(
+          "status", "error",
+          "errors", errors,
+          "serverTimestamp", Instant.now().toString());
+      roomSessionRegistry.sendDirect(session, objectMapper.writeValueAsString(response));
+    } catch (Exception ignored) {
+      // Session closed — nothing to do
+    }
   }
 
   private String extractRoomIdFromUri(WebSocketSession session) {
