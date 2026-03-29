@@ -84,7 +84,8 @@ public class RoomSessionRegistry {
           lock.unlock();
         }
         sent++;
-      } catch (IOException ignored) {
+      } catch (Exception ignored) {
+        // session closed mid-send — skip it
       }
     }
     return sent;
