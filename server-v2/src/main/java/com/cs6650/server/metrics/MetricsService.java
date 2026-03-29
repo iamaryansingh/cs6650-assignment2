@@ -133,11 +133,14 @@ public class MetricsService {
     Long total = jdbc.queryForObject("SELECT COUNT(*) FROM messages", Long.class);
     if (total == null) total = 0L;
 
-    // Average messages per second from bucketed counts
-    List<Map<String, Object>> perSecond = jdbc.queryForList(
-        "SELECT date_trunc('second', timestamp) AS ts, COUNT(*) AS cnt FROM messages GROUP BY ts");
-    double avgPerSecond = perSecond.isEmpty() ? 0.0
-        : perSecond.stream().mapToLong(r -> ((Number) r.get("cnt")).longValue()).average().orElse(0.0);
+    // Avg messages/sec from total count divided by elapsed seconds (fast, no full scan)
+    Map<String, Object> timeRange = jdbc.queryForMap(
+        "SELECT COUNT(*) AS cnt, " +
+        "EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) AS elapsed_sec FROM messages");
+    long totalCount = timeRange.get("cnt") == null ? 0 : ((Number) timeRange.get("cnt")).longValue();
+    double elapsedSec = timeRange.get("elapsed_sec") == null ? 1.0 :
+        Math.max(1.0, ((Number) timeRange.get("elapsed_sec")).doubleValue());
+    double avgPerSecond = totalCount / elapsedSec;
 
     // Top N users
     List<Map<String, Object>> topUsers = new ArrayList<>();

@@ -55,7 +55,7 @@ public class TestClientApplication {
           .build();
       HttpRequest request = HttpRequest.newBuilder()
           .uri(URI.create(metricsUrl))
-          .timeout(Duration.ofSeconds(30))
+          .timeout(Duration.ofSeconds(60))
           .GET()
           .build();
       HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
