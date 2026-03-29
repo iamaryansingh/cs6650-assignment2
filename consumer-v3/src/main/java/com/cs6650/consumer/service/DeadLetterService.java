@@ -22,7 +22,7 @@ public class DeadLetterService {
   private static final Logger log = LoggerFactory.getLogger(DeadLetterService.class);
 
   private final DeadLetterRepository repository;
-  private final ObjectMapper objectMapper = new ObjectMapper();
+  private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
   private final AtomicLong deadLetterCount = new AtomicLong(0);
 
   public DeadLetterService(DeadLetterRepository repository) {
