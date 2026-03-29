@@ -40,8 +40,8 @@ public class TestClientApplication {
     // ============================================================
     // A3: Call Metrics API after test completes and print clean summary
     // ============================================================
-    System.out.println("\nWaiting 15 seconds for queue drain and DB write completion...");
-    Thread.sleep(15_000);
+    System.out.println("\nWaiting 30 seconds for queue drain and DB write completion...");
+    Thread.sleep(30_000);
 
     String metricsUrl = metricsBaseUrl + "/api/metrics/summary";
     System.out.println("Calling metrics API: " + metricsUrl);
