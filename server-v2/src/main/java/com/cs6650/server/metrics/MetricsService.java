@@ -41,13 +41,18 @@ public class MetricsService {
   // ================================================================
   public RoomMessageResult getRoomMessages(String roomId, Instant start, Instant end) {
     long t0 = System.nanoTime();
+    // Count total matching, return only 5 sample messages for screenshot readability
+    Long total = jdbc.queryForObject(
+        "SELECT COUNT(*) FROM messages WHERE room_id = ? AND timestamp BETWEEN ? AND ?",
+        Long.class, roomId, Timestamp.from(start), Timestamp.from(end));
     List<Map<String, Object>> rows = jdbc.queryForList(
         "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
-        "FROM messages WHERE room_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC",
+        "FROM messages WHERE room_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp ASC LIMIT 5",
         roomId, Timestamp.from(start), Timestamp.from(end));
     long ms = nanos(t0);
     warnIfSlow("getRoomMessages", ms, 100);
-    return new RoomMessageResult(roomId, start.toString(), end.toString(), rows.size(), rows, ms);
+    return new RoomMessageResult(roomId, start.toString(), end.toString(),
+        total == null ? 0 : total.intValue(), rows, ms);
   }
 
   // ================================================================
@@ -56,20 +61,27 @@ public class MetricsService {
   public UserMessageResult getUserMessages(String userId, Instant start, Instant end) {
     long t0 = System.nanoTime();
     List<Map<String, Object>> rows;
+    // Count total, return only 5 sample messages for screenshot readability
+    Long total;
     if (start != null && end != null) {
+      total = jdbc.queryForObject(
+          "SELECT COUNT(*) FROM messages WHERE user_id = ? AND timestamp BETWEEN ? AND ?",
+          Long.class, userId, Timestamp.from(start), Timestamp.from(end));
       rows = jdbc.queryForList(
           "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
-          "FROM messages WHERE user_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC",
+          "FROM messages WHERE user_id = ? AND timestamp BETWEEN ? AND ? ORDER BY timestamp DESC LIMIT 5",
           userId, Timestamp.from(start), Timestamp.from(end));
     } else {
+      total = jdbc.queryForObject(
+          "SELECT COUNT(*) FROM messages WHERE user_id = ?", Long.class, userId);
       rows = jdbc.queryForList(
           "SELECT message_id, room_id, user_id, username, message, timestamp, message_type " +
-          "FROM messages WHERE user_id = ? ORDER BY timestamp DESC",
+          "FROM messages WHERE user_id = ? ORDER BY timestamp DESC LIMIT 5",
           userId);
     }
     long ms = nanos(t0);
     warnIfSlow("getUserMessages", ms, 200);
-    return new UserMessageResult(userId, rows.size(), rows, ms);
+    return new UserMessageResult(userId, total == null ? 0 : total.intValue(), rows, ms);
   }
 
   // ================================================================
