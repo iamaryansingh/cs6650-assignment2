@@ -18,11 +18,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
-/**
- * Assignment 3 Part 1: Metrics queries using JdbcTemplate.
- * JdbcTemplate has no startup cost — connects lazily on first query.
- * Simple 5s in-memory cache for analytics queries (Part 3).
- */
 @Service
 public class MetricsService {
 
@@ -36,12 +31,9 @@ public class MetricsService {
     this.jdbc = jdbc;
   }
 
-  // ================================================================
-  // CORE QUERY 1: Room messages in time range  (target < 100ms)
-  // ================================================================
+  // Q1: room messages in time range
   public RoomMessageResult getRoomMessages(String roomId, Instant start, Instant end) {
     long t0 = System.nanoTime();
-    // Count total matching, return only 5 sample messages for screenshot readability
     Long total = jdbc.queryForObject(
         "SELECT COUNT(*) FROM messages WHERE room_id = ? AND timestamp BETWEEN ? AND ?",
         Long.class, roomId, Timestamp.from(start), Timestamp.from(end));
@@ -55,13 +47,10 @@ public class MetricsService {
         total == null ? 0 : total.intValue(), rows, ms);
   }
 
-  // ================================================================
-  // CORE QUERY 2: User message history  (target < 200ms)
-  // ================================================================
+  // Q2: user message history
   public UserMessageResult getUserMessages(String userId, Instant start, Instant end) {
     long t0 = System.nanoTime();
     List<Map<String, Object>> rows;
-    // Count total, return only 5 sample messages for screenshot readability
     Long total;
     if (start != null && end != null) {
       total = jdbc.queryForObject(
@@ -84,9 +73,7 @@ public class MetricsService {
     return new UserMessageResult(userId, total == null ? 0 : total.intValue(), rows, ms);
   }
 
-  // ================================================================
-  // CORE QUERY 3: Count active users in time window  (target < 500ms)
-  // ================================================================
+  // Q3: distinct active users in time window
   public ActiveUsersResult getActiveUsers(Instant start, Instant end) {
     long t0 = System.nanoTime();
     Long count = jdbc.queryForObject(
@@ -97,9 +84,7 @@ public class MetricsService {
     return new ActiveUsersResult(count == null ? 0 : count, start.toString(), end.toString(), ms);
   }
 
-  // ================================================================
-  // CORE QUERY 4: Rooms a user participated in  (target < 50ms)
-  // ================================================================
+  // Q4: rooms a user has participated in
   public UserRoomsResult getUserRooms(String userId) {
     long t0 = System.nanoTime();
     List<Map<String, Object>> rows = jdbc.queryForList(
@@ -118,9 +103,7 @@ public class MetricsService {
     return new UserRoomsResult(userId, rooms, ms);
   }
 
-  // ================================================================
-  // ANALYTICS: Combined summary — cached for 5 seconds
-  // ================================================================
+  // analytics summary, cached for 5s
   public AnalyticsSummary getAnalyticsSummary(int topN) {
     String cacheKey = "analytics-" + topN;
     CachedResult cached = cache.get(cacheKey);
@@ -133,7 +116,6 @@ public class MetricsService {
     Long total = jdbc.queryForObject("SELECT COUNT(*) FROM messages", Long.class);
     if (total == null) total = 0L;
 
-    // Avg messages/sec from total count divided by elapsed seconds (fast, no full scan)
     Map<String, Object> timeRange = jdbc.queryForMap(
         "SELECT COUNT(*) AS cnt, " +
         "EXTRACT(EPOCH FROM (MAX(timestamp) - MIN(timestamp))) AS elapsed_sec FROM messages");
@@ -142,7 +124,6 @@ public class MetricsService {
         Math.max(1.0, ((Number) timeRange.get("elapsed_sec")).doubleValue());
     double avgPerSecond = totalCount / elapsedSec;
 
-    // Top N users
     List<Map<String, Object>> topUsers = new ArrayList<>();
     for (Map<String, Object> row : jdbc.queryForList(
         "SELECT user_id, username, COUNT(*) AS message_count FROM messages " +
@@ -151,7 +132,6 @@ public class MetricsService {
       topUsers.add(m);
     }
 
-    // Top N rooms
     List<Map<String, Object>> topRooms = new ArrayList<>();
     for (Map<String, Object> row : jdbc.queryForList(
         "SELECT room_id, COUNT(*) AS message_count, COUNT(DISTINCT user_id) AS unique_users " +
