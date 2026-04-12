@@ -32,7 +32,9 @@ public class TestClientApplication {
     LoadGenerator loadGenerator = new LoadGenerator(wsUrl, metrics);
 
     metrics.start();
+    metrics.startPeriodicReporter(5);
     loadGenerator.run(threads, totalMessages);
+    metrics.stopPeriodicReporter();
     metrics.end();
 
     System.out.println(metrics.report());

@@ -63,6 +63,10 @@ public class BatchMessageWriter {
   private final AtomicLong totalBatches = new AtomicLong(0);
   private final AtomicLong totalWriteErrors = new AtomicLong(0);
 
+  // Snapshot for per-interval DB write rate
+  private final AtomicLong lastWrittenSnapshot = new AtomicLong(0);
+  private volatile long lastStatsMs = System.currentTimeMillis();
+
   public BatchMessageWriter(
       MessageRepository repository,
       DeadLetterService deadLetterService,
@@ -180,9 +184,19 @@ public class BatchMessageWriter {
   }
 
   private void logStats() {
-    log.info("BatchWriter stats: written={} batches={} duplicatesSkipped={} errors={} bufferSize={}",
-        totalWritten.get(), totalBatches.get(), totalDuplicatesSkipped.get(),
-        totalWriteErrors.get(), bufferCount.get());
+    long nowMs        = System.currentTimeMillis();
+    long currentWritten = totalWritten.get();
+    long prevWritten  = lastWrittenSnapshot.getAndSet(currentWritten);
+    double elapsedSec = Math.max(1, nowMs - lastStatsMs) / 1000.0;
+    lastStatsMs       = nowMs;
+    double writeRate  = (currentWritten - prevWritten) / elapsedSec;
+    double consumeRate = metrics.getAndResetConsumeRate();
+
+    log.info("[CONSUMER] window={} msg/s consumed | [DB-WRITER] window={} msg/s written"
+             + " | total written={} | batches={} | errors={} | buffer={}",
+        String.format("%,.0f", consumeRate),
+        String.format("%,.0f", writeRate),
+        currentWritten, totalBatches.get(), totalWriteErrors.get(), bufferCount.get());
   }
 
   @PreDestroy

@@ -16,8 +16,44 @@ public class ClientMetrics {
   private long startNanos;
   private long endNanos;
 
+  // Live throughput reporter
+  private volatile boolean reporterRunning = false;
+  private Thread reporterThread;
+  private final AtomicLong lastSentSnapshot = new AtomicLong(0);
+
   public void start() { startNanos = System.nanoTime(); }
-  public void end() { endNanos = System.nanoTime(); }
+  public void end()   { endNanos   = System.nanoTime(); }
+
+  public void startPeriodicReporter(int intervalSeconds) {
+    reporterRunning = true;
+    lastSentSnapshot.set(0);
+    reporterThread = new Thread(() -> {
+      while (reporterRunning) {
+        try {
+          Thread.sleep(intervalSeconds * 1000L);
+        } catch (InterruptedException e) {
+          break;
+        }
+        long currentSent = sent.get();
+        long prev        = lastSentSnapshot.getAndSet(currentSent);
+        long delta       = currentSent - prev;
+        double rate      = delta / (double) intervalSeconds;
+        double elapsed   = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+        System.out.printf("[CLIENT] t=%5.0fs | window=%,8.0f msg/s | total sent=%,d | failed=%,d%n",
+            elapsed, rate, currentSent, failed.get());
+      }
+    });
+    reporterThread.setDaemon(true);
+    reporterThread.setName("client-metrics-reporter");
+    reporterThread.start();
+  }
+
+  public void stopPeriodicReporter() {
+    reporterRunning = false;
+    if (reporterThread != null) {
+      reporterThread.interrupt();
+    }
+  }
   public void sentOne() { sent.incrementAndGet(); }
   public void sentOne(String roomId, String messageType) {
     sent.incrementAndGet();
