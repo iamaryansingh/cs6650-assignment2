@@ -21,7 +21,8 @@ public class ConsumerMetrics {
   public void incForwarded() { forwarded.incrementAndGet(); }
   public void incFailed() { failed.incrementAndGet(); }
   public void incDuplicates() { duplicates.incrementAndGet(); }
-  public void incDuplicatesSkipped() { duplicatesSkipped.incrementAndGet(); } // A3
+  public void incDuplicatesSkipped()            { duplicatesSkipped.incrementAndGet(); }
+  public void incDuplicatesSkipped(int count)   { duplicatesSkipped.addAndGet(count); }
 
   public long getMessagesProcessed() { return messagesProcessed.get(); }
   public long getConsumed() { return consumed.get(); }

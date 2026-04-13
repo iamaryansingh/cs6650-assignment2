@@ -31,13 +31,15 @@ public class ThreadPoolConfig {
         new ThreadPoolExecutor.CallerRunsPolicy());
   }
 
-  /** Pool for async batch database writes. Kept smaller — DB is the bottleneck. */
+  /** Pool for async batch database writes.
+   *  Increased from 5-10 to 10-20: with JDBC batching + synchronous_commit=off,
+   *  DB throughput is higher so more concurrent writers can be kept busy. */
   @Bean(name = "dbWriterThreadPool", destroyMethod = "shutdown")
   public ExecutorService dbWriterThreadPool() {
     return new ThreadPoolExecutor(
-        5, 10,
+        10, 20,
         60L, TimeUnit.SECONDS,
-        new LinkedBlockingQueue<>(100),
+        new LinkedBlockingQueue<>(200),
         namedFactory("db-writer"),
         new ThreadPoolExecutor.CallerRunsPolicy());
   }
