@@ -40,10 +40,14 @@ public class TestClientApplication {
     System.out.println(metrics.report());
 
     // ============================================================
-    // A3: Call Metrics API after test completes and print clean summary
+    // A3: Poll until consumer drains then print clean summary
     // ============================================================
-    System.out.println("\nWaiting 30 seconds for queue drain and DB write completion...");
-    Thread.sleep(30_000);
+    // Why poll instead of fixed sleep:
+    //   Consumer at ~800 msg/s needs 500K/800 ≈ 625 seconds to drain, not 30.
+    //   A fixed 30s wait means the metrics API sees only ~5% of messages in DB,
+    //   making the throughput number meaningless. We poll until the DB count
+    //   stops increasing (consumer idle = queue empty).
+    waitForDrain(metricsBaseUrl, totalMessages);
 
     String metricsUrl = metricsBaseUrl + "/api/metrics/summary";
     System.out.println("Calling metrics API: " + metricsUrl);
@@ -127,6 +131,70 @@ public class TestClientApplication {
     } catch (Exception e) {
       System.err.println("WARNING: Failed to fetch metrics API: " + e.getMessage());
       System.err.println("Manually call: curl " + metricsUrl);
+    }
+  }
+
+  /**
+   * Polls the metrics API every 30 seconds until total messages in DB stops increasing.
+   * Two consecutive equal counts = consumer idle = queue drained.
+   * Max wait: 20 minutes (generous ceiling for 500K msgs at ~800 msg/s = ~625s).
+   */
+  private static void waitForDrain(String metricsBaseUrl, int expectedMessages) {
+    int pollIntervalSeconds = 30;
+    int maxWaitSeconds = 1200; // 20 minutes
+    int waited = 0;
+    long prevCount = -1;
+    int stableRounds = 0;
+
+    System.out.println("\nPolling for queue drain (max " + (maxWaitSeconds / 60) + " min, poll every "
+        + pollIntervalSeconds + "s)...");
+
+    HttpClient httpClient = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(10))
+        .build();
+
+    while (waited < maxWaitSeconds) {
+      try {
+        Thread.sleep(pollIntervalSeconds * 1000L);
+        waited += pollIntervalSeconds;
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+
+      try {
+        HttpRequest req = HttpRequest.newBuilder()
+            .uri(URI.create(metricsBaseUrl + "/api/metrics/summary"))
+            .timeout(Duration.ofSeconds(30))
+            .GET()
+            .build();
+        HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules();
+        JsonNode root = mapper.readTree(resp.body());
+        long totalInDb = root.path("analytics").path("totalMessages").asLong(-1);
+        double rate = root.path("analytics").path("messagesPerSecond").asDouble(-1);
+
+        System.out.printf("[DRAIN] t=+%ds | DB rows: %,d / %,d | consumer: %.0f msg/s%n",
+            waited, totalInDb, expectedMessages, rate);
+
+        if (totalInDb == prevCount) {
+          stableRounds++;
+          if (stableRounds >= 2) {
+            System.out.println("[DRAIN] Consumer idle — queue drained. Proceeding to final metrics.");
+            break;
+          }
+        } else {
+          stableRounds = 0;
+        }
+        prevCount = totalInDb;
+
+      } catch (Exception e) {
+        System.out.printf("[DRAIN] t=+%ds | metrics API unavailable: %s%n", waited, e.getMessage());
+      }
+    }
+
+    if (waited >= maxWaitSeconds) {
+      System.out.println("[DRAIN] Max wait reached. Some messages may still be in queue.");
     }
   }
 

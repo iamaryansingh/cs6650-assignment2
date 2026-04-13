@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class QueuePublisher {
+
   private static final Logger log = LoggerFactory.getLogger(QueuePublisher.class);
 
   private final ChannelPool channelPool;
@@ -25,8 +26,9 @@ public class QueuePublisher {
 
   @PostConstruct
   public void initTopology() throws Exception {
-    Channel ch = channelPool.borrow();
+    PooledChannel pc = channelPool.borrow();
     try {
+      Channel ch = pc.channel();
       ch.exchangeDeclare(props.getExchange(), "topic", true);
       for (int i = 1; i <= props.getRoomCount(); i++) {
         String queueName = props.getQueuePrefix() + i;
@@ -38,22 +40,35 @@ public class QueuePublisher {
       }
       log.info("RabbitMQ topology initialized for {} rooms", props.getRoomCount());
     } finally {
-      channelPool.release(ch);
+      channelPool.release(pc);
     }
   }
 
+  /**
+   * Publish a message to RabbitMQ without blocking for a per-message ACK.
+   *
+   * Previously this called waitForConfirmsOrDie() after every publish, which forced the
+   * calling thread (a Tomcat WebSocket handler thread) to wait for RabbitMQ to fsync the
+   * message before returning the channel to the pool. On a t3.small with EBS, that sync
+   * takes 1–5ms, capping each channel at 200–1000 msg/s.
+   *
+   * Now: the publish completes immediately; RabbitMQ ACKs arrive asynchronously via
+   * PooledChannel's confirm listener. The PooledChannel semaphore (MAX_OUTSTANDING=500)
+   * ensures a channel blocks only if 500 unconfirmed messages pile up — which should not
+   * happen under normal load and means throughput is no longer gated by ACK round-trips.
+   */
   public void publish(String roomId, String payload) throws Exception {
-    Channel ch = channelPool.borrow();
+    PooledChannel pc = channelPool.borrow();
     try {
       String routingKey = props.getQueuePrefix() + roomId;
       AMQP.BasicProperties properties = new AMQP.BasicProperties.Builder()
           .contentType("application/json")
           .deliveryMode(2)
           .build();
-      ch.basicPublish(props.getExchange(), routingKey, true, properties, payload.getBytes(StandardCharsets.UTF_8));
-      ch.waitForConfirmsOrDie(props.getPublisherTimeoutMs());
+      pc.publish(props.getExchange(), routingKey, properties,
+          payload.getBytes(StandardCharsets.UTF_8));
     } finally {
-      channelPool.release(ch);
+      channelPool.release(pc);
     }
   }
 }
