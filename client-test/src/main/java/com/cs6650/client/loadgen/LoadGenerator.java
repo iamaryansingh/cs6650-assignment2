@@ -17,7 +17,7 @@ public class LoadGenerator {
   private static final int JOIN_PERCENT = 5;
   private static final int LEAVE_PERCENT = 5;
   private static final int SEND_RETRY_LIMIT = 2;
-  private static final long SEND_TIMEOUT_SECONDS = 10L;
+  private static final long SEND_TIMEOUT_SECONDS = 30L;
 
   private final URI wsUri;
   private final ClientMetrics metrics;
