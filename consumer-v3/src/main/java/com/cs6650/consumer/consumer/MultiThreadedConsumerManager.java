@@ -14,10 +14,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.springframework.stereotype.Component;
 
 @Component
 public class MultiThreadedConsumerManager {
+
   private final RabbitMQProperties rabbitMQProperties;
   private final ConsumerProperties consumerProperties;
   private final BroadcastForwarder forwarder;
@@ -25,6 +29,7 @@ public class MultiThreadedConsumerManager {
   private final BatchMessageWriter batchWriter;
 
   private Connection sharedConnection;
+  private ExecutorService forwarderExecutor;
   private final List<ConsumerWorker> workers = new ArrayList<>();
   private final Map<String, Long> dedupeCache = new ConcurrentHashMap<>();
   private final Map<Integer, List<String>> workerQueues = new ConcurrentHashMap<>();
@@ -46,6 +51,18 @@ public class MultiThreadedConsumerManager {
   @PostConstruct
   public void start() throws Exception {
     int workerCount = Math.max(1, consumerProperties.getWorkerCount());
+
+    // Why 40-thread work pool on the AMQP connection:
+    //   The RabbitMQ Java client dispatches deliver() callbacks from a shared work pool.
+    //   Default pool size = max(availableProcessors, 4) = 4 threads on a t3.small (2 vCPUs).
+    //   With 20 worker channels all sharing 4 threads, and each callback blocking on an
+    //   HTTP POST (~3ms), throughput ceiling = 4 / 0.003 = 1,333 msg/s — exactly what
+    //   we observed. Giving the connection 40 dispatch threads removes this ceiling.
+    ExecutorService amqpWorkPool = Executors.newFixedThreadPool(40, namedFactory("amqp-worker"));
+
+    // Separate pool for async broadcast forwarding so it never blocks the deliver callback.
+    forwarderExecutor = Executors.newFixedThreadPool(20, namedFactory("broadcast"));
+
     ConnectionFactory factory = new ConnectionFactory();
     factory.setHost(rabbitMQProperties.getHost());
     factory.setPort(rabbitMQProperties.getPort());
@@ -54,7 +71,9 @@ public class MultiThreadedConsumerManager {
     factory.setVirtualHost(rabbitMQProperties.getVirtualHost());
     factory.setAutomaticRecoveryEnabled(true);
     factory.setNetworkRecoveryInterval(3000);
-    sharedConnection = factory.newConnection("consumer-pool");
+
+    // Pass the custom work pool so deliver callbacks dispatch from 40 threads, not 4.
+    sharedConnection = factory.newConnection(amqpWorkPool, "consumer-pool");
 
     for (int idx = 0; idx < workerCount; idx++) {
       List<String> queues = assignedQueues(idx, workerCount);
@@ -65,6 +84,7 @@ public class MultiThreadedConsumerManager {
           rabbitMQProperties.getPrefetch(),
           queues,
           forwarder,
+          forwarderExecutor,
           metrics,
           dedupeCache,
           consumerProperties.getDedupeTtlMs(),
@@ -86,11 +106,23 @@ public class MultiThreadedConsumerManager {
     return queues;
   }
 
+  private static java.util.concurrent.ThreadFactory namedFactory(String prefix) {
+    AtomicInteger counter = new AtomicInteger();
+    return r -> {
+      Thread t = new Thread(r, prefix + "-" + counter.incrementAndGet());
+      t.setDaemon(true);
+      return t;
+    };
+  }
+
   @PreDestroy
   public void shutdown() {
     running = false;
     for (ConsumerWorker worker : workers) {
       worker.stop();
+    }
+    if (forwarderExecutor != null) {
+      forwarderExecutor.shutdown();
     }
     if (sharedConnection != null) {
       try {
@@ -101,6 +133,6 @@ public class MultiThreadedConsumerManager {
   }
 
   public boolean isRunning() { return running; }
-  public int workerCount() { return workers.size(); }
+  public int workerCount()   { return workers.size(); }
   public Map<Integer, List<String>> workerAssignments() { return new HashMap<>(workerQueues); }
 }

@@ -23,12 +23,23 @@ CREATE TABLE IF NOT EXISTS dead_letter_messages (
     last_retry_at       TIMESTAMPTZ
 );
 
--- indexes
+-- Optimization 1: Covering indexes — include all queried columns so the
+-- executor can satisfy reads entirely from the index without heap fetches.
+
+-- Room query: WHERE room_id=? AND timestamp BETWEEN ? AND ? ORDER BY timestamp
+-- INCLUDE covers the SELECT list (message_id, user_id, username, message, message_type)
 CREATE INDEX IF NOT EXISTS idx_messages_room_timestamp
-    ON messages(room_id, timestamp);
+    ON messages(room_id, timestamp ASC)
+    INCLUDE (message_id, user_id, username, message, message_type);
 
+-- User query: WHERE user_id=? [AND timestamp BETWEEN ? AND ?] ORDER BY timestamp DESC
+-- INCLUDE covers SELECT list + room_id (needed for getUserRooms GROUP BY room_id)
 CREATE INDEX IF NOT EXISTS idx_messages_user_timestamp
-    ON messages(user_id, timestamp);
+    ON messages(user_id, timestamp DESC)
+    INCLUDE (message_id, room_id, username, message, message_type);
 
-CREATE INDEX IF NOT EXISTS idx_messages_timestamp
-    ON messages(timestamp);
+-- Active-users query: COUNT(DISTINCT user_id) WHERE timestamp BETWEEN ? AND ?
+-- INCLUDE user_id eliminates heap fetch for the DISTINCT aggregation
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp_userid
+    ON messages(timestamp)
+    INCLUDE (user_id);

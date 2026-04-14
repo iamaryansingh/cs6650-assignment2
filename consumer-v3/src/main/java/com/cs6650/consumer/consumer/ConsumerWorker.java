@@ -5,7 +5,6 @@ import com.cs6650.consumer.metrics.ConsumerMetrics;
 import com.cs6650.consumer.model.ChatMessage;
 import com.cs6650.consumer.service.BatchMessageWriter;
 import com.cs6650.consumer.service.BroadcastForwarder;
-import com.cs6650.consumer.service.ForwardResult;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.CancelCallback;
 import com.rabbitmq.client.Channel;
@@ -17,10 +16,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class ConsumerWorker {
+
   private static final Logger log = LoggerFactory.getLogger(ConsumerWorker.class);
 
   private final int workerId;
@@ -28,10 +29,11 @@ public class ConsumerWorker {
   private final int prefetch;
   private final List<String> queues;
   private final BroadcastForwarder forwarder;
+  private final ExecutorService forwarderExecutor;
   private final ConsumerMetrics metrics;
   private final Map<String, Long> dedupeCache;
   private final long dedupeTtlMs;
-  private final BatchMessageWriter batchWriter;   // A3: persistence
+  private final BatchMessageWriter batchWriter;
   private final ObjectMapper objectMapper = new ObjectMapper();
 
   private volatile long lastDedupeCleanupMs = 0L;
@@ -46,6 +48,7 @@ public class ConsumerWorker {
       int prefetch,
       List<String> queues,
       BroadcastForwarder forwarder,
+      ExecutorService forwarderExecutor,
       ConsumerMetrics metrics,
       Map<String, Long> dedupeCache,
       long dedupeTtlMs,
@@ -55,6 +58,7 @@ public class ConsumerWorker {
     this.prefetch = prefetch;
     this.queues = queues;
     this.forwarder = forwarder;
+    this.forwarderExecutor = forwarderExecutor;
     this.metrics = metrics;
     this.dedupeCache = dedupeCache;
     this.dedupeTtlMs = dedupeTtlMs;
@@ -79,24 +83,30 @@ public class ConsumerWorker {
           return;
         }
 
-        // A3: persist to PostgreSQL via write-behind batch writer (non-blocking)
+        // Persist to DB via write-behind batch (non-blocking, adds to in-memory buffer)
         batchWriter.addMessage(toEntity(message));
 
-        ForwardResult result = forwarder.forwardToAll(message);
-        if (result.success()) {
-          metrics.incForwarded();
-          channel.basicAck(deliveryTag, false);
-        } else {
-          metrics.incFailed();
-          channel.basicNack(deliveryTag, false, false);
-          log.warn("Worker {} failed to forward messageId={} roomId={} after retries; dropped",
-              workerId, message.getMessageId(), message.getRoomId());
-        }
+        // ACK immediately — message is safely in the batch buffer.
+        // Why ACK before broadcast:
+        //   Previously we blocked the deliver callback on the HTTP POST for broadcast,
+        //   which held the AMQP work pool thread hostage for ~3ms per message.
+        //   With 4 default work pool threads and 20 workers that's a hard 1,333 msg/s cap.
+        //   Persistence is guaranteed by batchWriter; broadcast is best-effort real-time
+        //   delivery to WebSocket clients and does not affect durability.
+        channel.basicAck(deliveryTag, false);
+        metrics.incForwarded();
+
+        // Broadcast to WebSocket clients asynchronously — does not block consume path.
+        forwarderExecutor.submit(() -> forwarder.forwardToAll(message));
+
       } catch (Exception e) {
         metrics.incFailed();
-        channel.basicNack(deliveryTag, false, false);
-        log.warn("Worker {} failed to process deliveryTag={} payloadLength={} error={}",
-            workerId, deliveryTag, payload.length(), e.toString());
+        try {
+          channel.basicNack(deliveryTag, false, false);
+        } catch (Exception ignored) {
+        }
+        log.warn("Worker {} failed to process deliveryTag={} error={}",
+            workerId, deliveryTag, e.toString());
       }
     };
 
@@ -109,9 +119,7 @@ public class ConsumerWorker {
   }
 
   public void stop() {
-    if (channel == null) {
-      return;
-    }
+    if (channel == null) return;
     try {
       for (String tag : consumerTags) {
         channel.basicCancel(tag);
@@ -122,9 +130,7 @@ public class ConsumerWorker {
   }
 
   private boolean firstTime(String messageId) {
-    if (messageId == null || messageId.isBlank()) {
-      return true;
-    }
+    if (messageId == null || messageId.isBlank()) return true;
     long now = System.currentTimeMillis();
     if ((now - lastDedupeCleanupMs) >= DEDUPE_CLEANUP_INTERVAL_MS) {
       dedupeCache.entrySet().removeIf(e -> (now - e.getValue()) > dedupeTtlMs);
@@ -152,9 +158,7 @@ public class ConsumerWorker {
   }
 
   private Instant parseTimestamp(String ts) {
-    if (ts == null || ts.isBlank()) {
-      return Instant.now();
-    }
+    if (ts == null || ts.isBlank()) return Instant.now();
     try {
       return Instant.parse(ts);
     } catch (Exception e) {

@@ -44,6 +44,12 @@
       <artifactId>spring-boot-starter-validation</artifactId>
     </dependency>
 
+    <!-- A4: Caffeine in-process cache for MetricsService queries -->
+    <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+    </dependency>
+
     <!-- A3: PostgreSQL for Metrics API (JdbcTemplate only, no JPA) -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

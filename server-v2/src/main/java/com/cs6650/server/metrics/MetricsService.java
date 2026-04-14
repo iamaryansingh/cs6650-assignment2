@@ -6,33 +6,85 @@ import com.cs6650.server.metrics.dto.RoomActivity;
 import com.cs6650.server.metrics.dto.RoomMessageResult;
 import com.cs6650.server.metrics.dto.UserMessageResult;
 import com.cs6650.server.metrics.dto.UserRoomsResult;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+/**
+ * Optimization 2: Caffeine in-process cache for all metrics queries.
+ *
+ * Previously only getAnalyticsSummary was cached (5s TTL via ConcurrentHashMap).
+ * The other 4 query methods hit PostgreSQL on every request — under load-test
+ * conditions this adds unnecessary DB pressure and inflates latency.
+ *
+ * Cache TTLs chosen per query cost:
+ *   - Room / user / active-users queries : 2 s  (cheap, but high call rate)
+ *   - User rooms (GROUP BY aggregation)  : 3 s
+ *   - Analytics summary (full table scan): 5 s
+ *
+ * Maximum cache sizes are generous relative to the 20-room / bounded-user
+ * test workload so eviction never becomes a factor.
+ */
 @Service
 public class MetricsService {
 
   private static final Logger log = LoggerFactory.getLogger(MetricsService.class);
-  private static final long CACHE_TTL_MS = 5000;
 
   private final JdbcTemplate jdbc;
-  private final Map<String, CachedResult> cache = new ConcurrentHashMap<>();
+
+  // Per-query caches with appropriate TTLs
+  private final Cache<String, RoomMessageResult>  roomCache;
+  private final Cache<String, UserMessageResult>  userCache;
+  private final Cache<String, ActiveUsersResult>  activeUsersCache;
+  private final Cache<String, UserRoomsResult>    userRoomsCache;
+  private final Cache<String, AnalyticsSummary>   analyticsCache;
 
   public MetricsService(JdbcTemplate jdbc) {
     this.jdbc = jdbc;
+
+    this.roomCache = Caffeine.newBuilder()
+        .maximumSize(500)
+        .expireAfterWrite(Duration.ofSeconds(2))
+        .build();
+
+    this.userCache = Caffeine.newBuilder()
+        .maximumSize(500)
+        .expireAfterWrite(Duration.ofSeconds(2))
+        .build();
+
+    this.activeUsersCache = Caffeine.newBuilder()
+        .maximumSize(200)
+        .expireAfterWrite(Duration.ofSeconds(2))
+        .build();
+
+    this.userRoomsCache = Caffeine.newBuilder()
+        .maximumSize(500)
+        .expireAfterWrite(Duration.ofSeconds(3))
+        .build();
+
+    this.analyticsCache = Caffeine.newBuilder()
+        .maximumSize(50)
+        .expireAfterWrite(Duration.ofSeconds(5))
+        .build();
   }
 
   // Q1: room messages in time range
   public RoomMessageResult getRoomMessages(String roomId, Instant start, Instant end) {
+    String key = "room:" + roomId + ":" + start + ":" + end;
+    return roomCache.get(key, k -> queryRoomMessages(roomId, start, end));
+  }
+
+  private RoomMessageResult queryRoomMessages(String roomId, Instant start, Instant end) {
     long t0 = System.nanoTime();
     Long total = jdbc.queryForObject(
         "SELECT COUNT(*) FROM messages WHERE room_id = ? AND timestamp BETWEEN ? AND ?",
@@ -49,6 +101,11 @@ public class MetricsService {
 
   // Q2: user message history
   public UserMessageResult getUserMessages(String userId, Instant start, Instant end) {
+    String key = "user:" + userId + ":" + start + ":" + end;
+    return userCache.get(key, k -> queryUserMessages(userId, start, end));
+  }
+
+  private UserMessageResult queryUserMessages(String userId, Instant start, Instant end) {
     long t0 = System.nanoTime();
     List<Map<String, Object>> rows;
     Long total;
@@ -75,6 +132,11 @@ public class MetricsService {
 
   // Q3: distinct active users in time window
   public ActiveUsersResult getActiveUsers(Instant start, Instant end) {
+    String key = "active:" + start + ":" + end;
+    return activeUsersCache.get(key, k -> queryActiveUsers(start, end));
+  }
+
+  private ActiveUsersResult queryActiveUsers(Instant start, Instant end) {
     long t0 = System.nanoTime();
     Long count = jdbc.queryForObject(
         "SELECT COUNT(DISTINCT user_id) FROM messages WHERE timestamp BETWEEN ? AND ?",
@@ -86,6 +148,10 @@ public class MetricsService {
 
   // Q4: rooms a user has participated in
   public UserRoomsResult getUserRooms(String userId) {
+    return userRoomsCache.get(userId, this::queryUserRooms);
+  }
+
+  private UserRoomsResult queryUserRooms(String userId) {
     long t0 = System.nanoTime();
     List<Map<String, Object>> rows = jdbc.queryForList(
         "SELECT room_id, MAX(timestamp) AS last_activity, COUNT(*) AS message_count " +
@@ -103,14 +169,13 @@ public class MetricsService {
     return new UserRoomsResult(userId, rooms, ms);
   }
 
-  // analytics summary, cached for 5s
+  // Q5: analytics summary
   public AnalyticsSummary getAnalyticsSummary(int topN) {
-    String cacheKey = "analytics-" + topN;
-    CachedResult cached = cache.get(cacheKey);
-    if (cached != null && !cached.isExpired()) {
-      return (AnalyticsSummary) cached.value;
-    }
+    String key = "analytics:" + topN;
+    return analyticsCache.get(key, k -> queryAnalyticsSummary(topN));
+  }
 
+  private AnalyticsSummary queryAnalyticsSummary(int topN) {
     long t0 = System.nanoTime();
 
     Long total = jdbc.queryForObject("SELECT COUNT(*) FROM messages", Long.class);
@@ -128,23 +193,18 @@ public class MetricsService {
     for (Map<String, Object> row : jdbc.queryForList(
         "SELECT user_id, username, COUNT(*) AS message_count FROM messages " +
         "GROUP BY user_id, username ORDER BY message_count DESC LIMIT ?", topN)) {
-      Map<String, Object> m = new HashMap<>(row);
-      topUsers.add(m);
+      topUsers.add(new HashMap<>(row));
     }
 
     List<Map<String, Object>> topRooms = new ArrayList<>();
     for (Map<String, Object> row : jdbc.queryForList(
         "SELECT room_id, COUNT(*) AS message_count, COUNT(DISTINCT user_id) AS unique_users " +
         "FROM messages GROUP BY room_id ORDER BY message_count DESC LIMIT ?", topN)) {
-      Map<String, Object> m = new HashMap<>(row);
-      topRooms.add(m);
+      topRooms.add(new HashMap<>(row));
     }
 
     long ms = nanos(t0);
-    AnalyticsSummary result = new AnalyticsSummary(
-        total, avgPerSecond, avgPerSecond * 60, topUsers, topRooms, ms);
-    cache.put(cacheKey, new CachedResult(result, System.currentTimeMillis() + CACHE_TTL_MS));
-    return result;
+    return new AnalyticsSummary(total, avgPerSecond, avgPerSecond * 60, topUsers, topRooms, ms);
   }
 
   private long nanos(long t0) { return (System.nanoTime() - t0) / 1_000_000; }
@@ -153,9 +213,5 @@ public class MetricsService {
     if (ms > targetMs) {
       log.warn("SLOW QUERY: {} took {}ms (target <{}ms)", query, ms, targetMs);
     }
-  }
-
-  private record CachedResult(Object value, long expiresAt) {
-    boolean isExpired() { return System.currentTimeMillis() > expiresAt; }
   }
 }
