@@ -8,7 +8,10 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -25,30 +28,45 @@ public class DeadLetterService {
   private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
   private final AtomicLong deadLetterCount = new AtomicLong(0);
 
+  // Self-injection so saveBatch() calls save() via the Spring proxy,
+  // ensuring REQUIRES_NEW propagation is honoured (self-calls bypass the proxy).
+  @Autowired
+  @Lazy
+  private DeadLetterService self;
+
   public DeadLetterService(DeadLetterRepository repository) {
     this.repository = repository;
   }
 
-  @Transactional
+  /**
+   * Saves one dead-letter entry in its own independent transaction.
+   * REQUIRES_NEW ensures a prior failed transaction on the same connection
+   * cannot bleed over and cause "25P02: current transaction is aborted".
+   */
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void save(ChatMessageEntity entity, String errorMessage) {
+    DeadLetterEntity dead = new DeadLetterEntity();
     try {
-      DeadLetterEntity dead = new DeadLetterEntity();
       dead.setOriginalMessage(objectMapper.writeValueAsString(entity));
-      dead.setErrorMessage(errorMessage);
-      repository.save(dead);
-      deadLetterCount.incrementAndGet();
-      log.warn("Message {} sent to dead-letter: {}", entity.getMessageId(), errorMessage);
     } catch (Exception e) {
-      // Last resort — if we can't even write dead-letter, just log it
-      log.error("CRITICAL: Failed to save dead-letter for messageId={}: {}",
-          entity.getMessageId(), e.getMessage());
+      dead.setOriginalMessage("{\"error\":\"serialization failed\"}");
     }
+    dead.setErrorMessage(errorMessage);
+    repository.save(dead);
+    deadLetterCount.incrementAndGet();
+    log.warn("Message {} sent to dead-letter: {}", entity.getMessageId(), errorMessage);
   }
 
-  @Transactional
+  // NOT transactional — each save() gets its own REQUIRES_NEW transaction via proxy.
   public void saveBatch(List<ChatMessageEntity> batch, String errorMessage) {
     for (ChatMessageEntity entity : batch) {
-      save(entity, errorMessage);
+      try {
+        self.save(entity, errorMessage);  // goes through proxy → REQUIRES_NEW honoured
+      } catch (Exception e) {
+        // Last resort — if we can't even write dead-letter, just log it
+        log.error("CRITICAL: Failed to save dead-letter for messageId={}: {}",
+            entity.getMessageId(), e.getMessage());
+      }
     }
     log.warn("Batch of {} messages sent to dead-letter: {}", batch.size(), errorMessage);
   }
